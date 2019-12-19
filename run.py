@@ -6,8 +6,12 @@ from torch.autograd import Variable
 import torch
 import torch.optim as optim
 import torch.nn as nn
+from torch.utils.tensorboard import SummaryWriter
+
+tb_writer = SummaryWriter(log_dir="logs")
 
 from sklearn.utils import shuffle
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from gensim.models.keyedvectors import KeyedVectors
 import numpy as np
 import argparse
@@ -59,14 +63,17 @@ def train(data, params):
     optimizer = optim.Adadelta(parameters, params["LEARNING_RATE"])
     criterion = nn.CrossEntropyLoss()
 
-    max_dev_acc = 0
-    max_test_acc = 0
-    max_train_acc = 0
+    max_dev_res = {"weighted_f1": 0}
+    max_test_res = {}
+    max_train_res = {}
+    max_epoch = 0
     best_cnt = 0
+    global_step = 0
     for e in range(params["EPOCH"]):
         data["train_x"], data["train_y"] = shuffle(data["train_x"], data["train_y"])
 
         for i in range(0, len(data["train_x"]), params["BATCH_SIZE"]):
+            global_step += 1
             batch_range = min(params["BATCH_SIZE"], len(data["train_x"]) - i)
 
             batch_x = [[data["word_to_idx"][w] for w in sent] +
@@ -84,30 +91,42 @@ def train(data, params):
             loss.backward()
             nn.utils.clip_grad_norm(parameters, max_norm=params["NORM_LIMIT"])
             optimizer.step()
+            print("global_step: %d, epoch: %d, loss: %f" % (global_step, e + 1, loss.item()))
+            tb_writer.add_scalar('loss', loss.item(), global_step)
 
-        dev_acc = test(data, model, params, mode="dev")
-        test_acc = test(data, model, params, mode="test")
-        train_acc = test(data, model, params, mode="train")
-        print("epoch:", e + 1, "/ train_acc:", train_acc, "/ dev_acc:", dev_acc, "/ test_acc:", test_acc)
+        print("epoch:", e + 1)
+        train_res = test(data, model, params, "train", global_step)
+        dev_res = test(data, model, params, "dev", global_step)
+        test_res = test(data, model, params, "test", global_step)
+        # print("epoch:", e + 1, "/ train_res:", train_res, "/ dev_res:", dev_res, "/ test_res:", test_res)
 
-        if params["EARLY_STOPPING"] and dev_acc <= max_dev_acc:
+        if dev_res["weighted_f1"] > max_dev_res["weighted_f1"]:
+            max_train_res = train_res
+            max_dev_res = dev_res
+            max_test_res = test_res
+            max_epoch = e + 1
+            print("New best model!")
+            if params["SAVE_MODEL"]:
+                best_model = copy.deepcopy(model)
+
+        if params["EARLY_STOPPING"] and dev_res["weighted_f1"] <= max_dev_res["weighted_f1"]:
             best_cnt += 1
             if best_cnt >= 3:
-                print("early stopping by dev_acc!")
+                print("early stopping by dev_weighted_f1!")
                 break
         else:
             best_cnt = 0
-            max_train_acc = train_acc
-            max_dev_acc = dev_acc
-            max_test_acc = test_acc
-            print("New best model!")
-            best_model = copy.deepcopy(model)
 
-    print("max train acc:", max_train_acc, "max dev acc:", max_dev_acc, "test acc:", max_test_acc)
-    return best_model
+    print("BEST MODEL epoch: " + str(max_epoch))
+    print("train\t" + " ".join(["%s: %.4f" % (k, max_train_res[k]) for k in max_train_res]))
+    print("dev\t" + " ".join(["%s: %.4f" % (k, max_dev_res[k]) for k in max_dev_res]))
+    print("test\t" + " ".join(["%s: %.4f" % (k, max_test_res[k]) for k in max_test_res]))
+    if params["SAVE_MODEL"]:
+        utils.save_model(best_model, params)
+    return max_train_res, max_dev_res, max_test_res
 
 
-def test(data, model, params, mode="test"):
+def test(data, model, params, mode, global_step):
     model.eval()
 
     if mode == "dev":
@@ -125,9 +144,23 @@ def test(data, model, params, mode="test"):
     y = [data["classes"].index(c) for c in y]
 
     pred = np.argmax(model(x).cpu().data.numpy(), axis=1)
-    acc = sum([1 if p == y else 0 for p, y in zip(pred, y)]) / len(pred)
-
-    return acc
+    # acc = sum([1 if p == y else 0 for p, y in zip(pred, y)]) / len(pred)
+    res = {}
+    res["acc"] = accuracy_score(y, pred)
+    res["macro_p"] = precision_score(y, pred, average="macro")
+    res["macro_r"] = recall_score(y, pred, average="macro")
+    res["macro_f1"] = f1_score(y, pred, average="macro")
+    res["micro_p"] = precision_score(y, pred, average="micro")
+    res["micro_r"] = recall_score(y, pred, average="micro")
+    res["micro_f1"] = f1_score(y, pred, average="micro")
+    res["weighted_f1"] = f1_score(y, pred, average="weighted")
+    print(
+        "{}\tacc: {:.4f}\tmacro: p {:.4f}, r {:.4f}, f1: {:.4f}\tmicro: p {:.4f}, r {:.4f}, f1 {:.4f}\tweighted_f1:{:.4f}".format(
+            mode, res["acc"], res["macro_p"], res["macro_r"], res["macro_f1"], res["micro_p"], res["micro_r"],
+            res["micro_f1"], res["weighted_f1"]))
+    for k in res:
+        tb_writer.add_scalar(mode + "_" + k, res[k], global_step)
+    return res
 
 
 def main():
@@ -136,11 +169,11 @@ def main():
     parser.add_argument("--model", default="non-static",
                         help="available models: rand, static, non-static, multichannel")
     parser.add_argument("--dataset", default="MELD", help="available datasets: MR, TREC, MELD")
-    parser.add_argument("--save_model", default=True, action='store_true', help="whether saving model or not")
-    parser.add_argument("--early_stopping", default=True, action='store_true', help="whether to apply early stopping")
-    parser.add_argument("--epoch", default=100, type=int, help="number of max epoch")
-    parser.add_argument("--learning_rate", default=1.0, type=float, help="learning rate")
-    parser.add_argument("--gpu", default=0, type=int, help="the number of gpu to be used")
+    parser.add_argument("--save_model", default=False, action='store_true', help="whether saving model or not")
+    parser.add_argument("--early_stopping", default=False, action='store_true', help="whether to apply early stopping")
+    parser.add_argument("--epoch", default=150, type=int, help="number of max epoch")
+    parser.add_argument("--learning_rate", default=0.1, type=float, help="learning rate")
+    parser.add_argument("--gpu", default=2, type=int, help="the number of gpu to be used")
     parser.add_argument("--w2v_path", default="/users5/yjtian/Downloads/glove.840B.300d.w2v.txt",
                         help="word2vec file path")
 
@@ -160,7 +193,7 @@ def main():
         "EPOCH": options.epoch,
         "LEARNING_RATE": options.learning_rate,
         "MAX_SENT_LEN": max([len(sent) for sent in data["train_x"] + data["dev_x"] + data["test_x"]]),
-        "BATCH_SIZE": 50,
+        "BATCH_SIZE": 256,
         "WORD_DIM": 300,
         "VOCAB_SIZE": len(data["vocab"]),
         "CLASS_SIZE": len(data["classes"]),
@@ -188,10 +221,20 @@ def main():
 
     if options.mode == "train":
         print("=" * 20 + "TRAINING STARTED" + "=" * 20)
-        model = train(data, params)
-        if params["SAVE_MODEL"]:
-            utils.save_model(model, params)
+        v = ["acc", "macro_f1", "micro_f1", "weighted_f1"]
+        with open("res.csv", "w", encoding="utf-8") as f:
+            f.write("id," + ",".join(
+                ["train_%s" % s for s in v] + ["dev_%s" % s for s in v] + ["test_%s" % s for s in v]) + "\n")
+            # f.write("id,acc,macro_f1,micro_f1,weighted_f1\n")
+            for i in range(1, 2):
+                print("=" * 10 + "ROUND " + str(i) + "=" * 10)
+                max_train_res, max_dev_res, max_test_res = train(data, params)
+                f.write(str(i) + "," + ",".join(["%f" % max_train_res[k] for k in max_train_res if k in v]))
+                f.write("," + ",".join(["%f" % max_dev_res[k] for k in max_dev_res if k in v]))
+                f.write("," + ",".join(["%f" % max_test_res[k] for k in max_test_res if k in v]) + "\n")
+                # f.write(str(i) + "," + ",".join(["%f" % max_test_res[k] for k in max_test_res if k in v]) + "\n")
         print("=" * 20 + "TRAINING FINISHED" + "=" * 20)
+        tb_writer.close()
     else:
         model = utils.load_model(params).cuda(params["GPU"])
 

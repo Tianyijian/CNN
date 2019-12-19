@@ -114,7 +114,23 @@ def glove2word():
     glove2word2vec("/users5/yjtian/Downloads/glove.840B.300d.txt", "/users5/yjtian/Downloads/glove.840B.300d.w2v.txt")
 
 
+def test():
+    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
+    y =    [0, 1, 2, 0, 1, 2]
+    pred = [0, 2, 1, 0, 0, 1]
+    accuracy = accuracy_score(y, pred)
+    macro_p = precision_score(y, pred, average="macro")
+    macro_r = recall_score(y, pred, average="macro")
+    macro_f1 = f1_score(y, pred, average="macro")
+    micro_p = precision_score(y, pred, average="micro")
+    micro_r = recall_score(y, pred, average="micro")
+    micro_f1 = f1_score(y, pred, average="micro")
+    print("acc: {}\nmacro: p {}, r {}, f1: {}\nmicro: p {}, r {}, f1 {}".format(accuracy, macro_p, macro_r, macro_f1,
+                                                                                 micro_p, micro_r, micro_f1))
+
+
 if __name__ == '__main__':
-    read_MELD()
+    # read_MELD()
     # read_MR()
     # glove2word()
+    test()

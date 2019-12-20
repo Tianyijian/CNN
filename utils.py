@@ -2,6 +2,9 @@ from sklearn.utils import shuffle
 
 import pickle
 import csv
+from nltk import word_tokenize
+
+max_length = 0
 
 
 def read_MELD():
@@ -10,12 +13,17 @@ def read_MELD():
 
     def read(mode):
         x, y = [], []
+        global max_length
         with open("data/MELD/" + mode + "_sent_emo.csv", 'r', encoding="utf-8", errors="ignore") as f:
             f_csv = csv.reader(f)
             for i, line in enumerate(f_csv):
                 if i == 0:
                     continue
-                x.append(line[1].split())
+                # x.append(line[1].split())
+                words = word_tokenize(line[1])
+                if len(words) > max_length:
+                    max_length = len(words)
+                x.append(words)
                 y.append(emotion.index(line[3]))
 
         x, y = shuffle(x, y)
@@ -25,6 +33,7 @@ def read_MELD():
     read("dev")
     read("test")
     print(data.keys())
+    print("max_sent_length:%d " % max_length)
     for mode in ["train", "dev", "test"]:
         print("\n-------" + mode + "--------")
         print("%d %d" % (len(data[mode + "_x"]), len(data[mode + "_y"])))
@@ -116,7 +125,7 @@ def glove2word():
 
 def test():
     from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
-    y =    [0, 1, 2, 0, 1, 2]
+    y = [0, 1, 2, 0, 1, 2]
     pred = [0, 2, 1, 0, 0, 1]
     accuracy = accuracy_score(y, pred)
     macro_p = precision_score(y, pred, average="macro")
@@ -126,11 +135,13 @@ def test():
     micro_r = recall_score(y, pred, average="micro")
     micro_f1 = f1_score(y, pred, average="micro")
     print("acc: {}\nmacro: p {}, r {}, f1: {}\nmicro: p {}, r {}, f1 {}".format(accuracy, macro_p, macro_r, macro_f1,
-                                                                                 micro_p, micro_r, micro_f1))
+                                                                                micro_p, micro_r, micro_f1))
 
 
 if __name__ == '__main__':
-    # read_MELD()
+    read_MELD()
     # read_MR()
     # glove2word()
-    test()
+    # test()
+    # import nltk
+    # nltk.download()

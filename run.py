@@ -18,7 +18,7 @@ import argparse
 import copy
 
 
-def train(data, params):
+def train(data, params, global_step):
     if params["MODEL"] != "rand":
         # load word2vec
         print("loading word2vec...")
@@ -68,7 +68,6 @@ def train(data, params):
     max_train_res = {}
     max_epoch = 0
     best_cnt = 0
-    global_step = 0
     for e in range(params["EPOCH"]):
         data["train_x"], data["train_y"] = shuffle(data["train_x"], data["train_y"])
 
@@ -123,7 +122,7 @@ def train(data, params):
     print("test\t" + " ".join(["%s: %.4f" % (k, max_test_res[k]) for k in max_test_res]))
     if params["SAVE_MODEL"]:
         utils.save_model(best_model, params)
-    return max_train_res, max_dev_res, max_test_res
+    return global_step, max_train_res, max_dev_res, max_test_res, max_epoch
 
 
 def test(data, model, params, mode, global_step):
@@ -171,9 +170,9 @@ def main():
     parser.add_argument("--dataset", default="MELD", help="available datasets: MR, TREC, MELD")
     parser.add_argument("--save_model", default=False, action='store_true', help="whether saving model or not")
     parser.add_argument("--early_stopping", default=False, action='store_true', help="whether to apply early stopping")
-    parser.add_argument("--epoch", default=150, type=int, help="number of max epoch")
+    parser.add_argument("--epoch", default=200, type=int, help="number of max epoch")
     parser.add_argument("--learning_rate", default=0.1, type=float, help="learning rate")
-    parser.add_argument("--gpu", default=2, type=int, help="the number of gpu to be used")
+    parser.add_argument("--gpu", default=9, type=int, help="the number of gpu to be used")
     parser.add_argument("--w2v_path", default="/users5/yjtian/Downloads/glove.840B.300d.w2v.txt",
                         help="word2vec file path")
 
@@ -222,18 +221,27 @@ def main():
     if options.mode == "train":
         print("=" * 20 + "TRAINING STARTED" + "=" * 20)
         v = ["acc", "macro_f1", "micro_f1", "weighted_f1"]
+        iter = 5
+        test_w_f1 = 0.0
+        best_epoch = []
+        global_step = 0
         with open("res.csv", "w", encoding="utf-8") as f:
             f.write("id," + ",".join(
                 ["train_%s" % s for s in v] + ["dev_%s" % s for s in v] + ["test_%s" % s for s in v]) + "\n")
             # f.write("id,acc,macro_f1,micro_f1,weighted_f1\n")
-            for i in range(1, 2):
+            for i in range(1, 1 + iter):
                 print("=" * 10 + "ROUND " + str(i) + "=" * 10)
-                max_train_res, max_dev_res, max_test_res = train(data, params)
+                global_step, max_train_res, max_dev_res, max_test_res, max_epoch = train(data, params, global_step)
+                test_w_f1 += max_test_res["weighted_f1"]
+                best_epoch.append(max_epoch)
                 f.write(str(i) + "," + ",".join(["%f" % max_train_res[k] for k in max_train_res if k in v]))
                 f.write("," + ",".join(["%f" % max_dev_res[k] for k in max_dev_res if k in v]))
                 f.write("," + ",".join(["%f" % max_test_res[k] for k in max_test_res if k in v]) + "\n")
                 # f.write(str(i) + "," + ",".join(["%f" % max_test_res[k] for k in max_test_res if k in v]) + "\n")
         print("=" * 20 + "TRAINING FINISHED" + "=" * 20)
+        test_w_f1 = test_w_f1 / iter
+        print("best epoch: %s, avg test weighted f1: %f" % (str(best_epoch), test_w_f1))
+        tb_writer.add_scalar('avg_test_w_f1', test_w_f1, global_step)
         tb_writer.close()
     else:
         model = utils.load_model(params).cuda(params["GPU"])
